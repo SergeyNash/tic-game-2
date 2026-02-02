@@ -1,50 +1,59 @@
-# [PROJECT_NAME] Constitution
-<!-- Example: Spec Constitution, TaskFlow Constitution, etc. -->
+# tic-game (TIC-80 Lua) Constitution
 
 ## Core Principles
 
-### [PRINCIPLE_1_NAME]
-<!-- Example: I. Library-First -->
-[PRINCIPLE_1_DESCRIPTION]
-<!-- Example: Every feature starts as a standalone library; Libraries must be self-contained, independently testable, documented; Clear purpose required - no organizational-only libraries -->
+### I. Игра всегда в “playable” состоянии
+- Каждый шаг разработки заканчивается **запускаемой** игрой (без “сломано, потом починю”).
+- Вертикальные срезы: сначала минимально рабочая механика, затем улучшения.
+- Не добавляем “инфраструктуру ради инфраструктуры”.
 
-### [PRINCIPLE_2_NAME]
-<!-- Example: II. CLI Interface -->
-[PRINCIPLE_2_DESCRIPTION]
-<!-- Example: Every library exposes functionality via CLI; Text in/out protocol: stdin/args → stdout, errors → stderr; Support JSON + human-readable formats -->
+### II. Поэтапная разработка в режиме диалога
+- Делаем **маленькие итерации**: цель шага → реализация → короткая проверка → следующий шаг.
+- Я предлагаю решения и фиксирую допущения; ты корректируешь курс и приоритеты.
+- Если есть неоднозначность, выбираем **самый простой** вариант, который можно улучшить позже.
 
-### [PRINCIPLE_3_NAME]
-<!-- Example: III. Test-First (NON-NEGOTIABLE) -->
-[PRINCIPLE_3_DESCRIPTION]
-<!-- Example: TDD mandatory: Tests written → User approved → Tests fail → Then implement; Red-Green-Refactor cycle strictly enforced -->
+### III. Уважение к ограничениям TIC-80 — не опция
+- Целевая платформа: **TIC-80**, язык **Lua**.
+- Ориентируемся на стандартный рендер: **240×136**, палитра **16 цветов**.
+- Держим производительность комфортной для **60 FPS** (без тяжелых пиксельных проходов “в лоб” каждый кадр).
 
-### [PRINCIPLE_4_NAME]
-<!-- Example: IV. Integration Testing -->
-[PRINCIPLE_4_DESCRIPTION]
-<!-- Example: Focus areas requiring integration tests: New library contract tests, Contract changes, Inter-service communication, Shared schemas -->
+### IV. Четкая структура состояния игры
+- Состояния (минимум): `menu`, `game`, `pause` (при необходимости — `gameover`).
+- Ввод, логика и рендер разделены логически (например: `update()` / `draw()` внутри `TIC()`).
+- Все “магические числа” (скорости, гравитация, тайлы, id спрайтов) — в одном месте как константы/таблицы.
 
-### [PRINCIPLE_5_NAME]
-<!-- Example: V. Observability, VI. Versioning & Breaking Changes, VII. Simplicity -->
-[PRINCIPLE_5_DESCRIPTION]
-<!-- Example: Text I/O ensures debuggability; Structured logging required; Or: MAJOR.MINOR.BUILD format; Or: Start simple, YAGNI principles -->
+### V. Данные важнее “хаков”
+- Семантика тайлов/спрайтов задается явно (таблицы вроде `SOLID_TILES`, `HAZARD_TILES`, `SPAWN_TILES`).
+- Минимизируем скрытые зависимости между системами; общие решения оформляем как небольшие модули/секции кода.
+- Предпочтение простым и читаемым алгоритмам (YAGNI), но без грубых технических долгов, которые мешают следующим шагам.
 
-## [SECTION_2_NAME]
-<!-- Example: Additional Constraints, Security Requirements, Performance Standards, etc. -->
+## Технические ограничения и стандарты (TIC-80)
 
-[SECTION_2_CONTENT]
-<!-- Example: Technology stack requirements, compliance standards, deployment policies, etc. -->
+- **Рендер**: используем стандартные примитивы (`cls`, `spr`, `map`, `print` и т.п.). Тяжелые эффекты через `pix()` — только если точно нужно.
+- **Спрайты/тайлы**: по умолчанию считаем, что базовая сетка — **8×8**. Если используем 16×16, это фиксируется и поддерживается во всем пайплайне.
+- **Прозрачность**: по умолчанию используем `colorkey = 0`, если не оговорено иначе.
+- **Ввод**: вся раскладка кнопок описана централизованно (таблица маппинга). `btnp` используем для “однократных” действий, `btn` — для удержания.
+- **Производительность/аллокации**: избегаем создания больших временных таблиц “каждый кадр”; где уместно — переиспользуем структуры.
+- **Сохранение**: если понадобится прогресс — используем `pmem` и документируем формат (ключи/диапазоны), иначе не трогаем.
+- **Аудио**: все `sfx`/`music` id оформляем как именованные константы/таблицы.
 
-## [SECTION_3_NAME]
-<!-- Example: Development Workflow, Review Process, Quality Gates, etc. -->
+## Процесс разработки и критерии “готово”
 
-[SECTION_3_CONTENT]
-<!-- Example: Code review requirements, testing gates, deployment approval process, etc. -->
+- **Шаг (итерация)** считается завершенным, когда:
+  - игра запускается и не падает;
+  - управление понятно и перечислено (кнопки/действия);
+  - новый функционал визуально/геймплейно проверяем (короткий “manual test plan” на 2–5 пунктов).
+- **Коммуникация по шагу**:
+  - в начале шага я формулирую цель, список изменений и ограничения;
+  - в конце — что сделано, как проверить, что осталось/что дальше.
+- **Git**:
+  - коммиты/ветки/PR — только по твоей явной просьбе;
+  - никаких force-операций без прямого указания.
 
 ## Governance
-<!-- Example: Constitution supersedes all other practices; Amendments require documentation, approval, migration plan -->
 
-[GOVERNANCE_RULES]
-<!-- Example: All PRs/reviews must verify compliance; Complexity must be justified; Use [GUIDANCE_FILE] for runtime development guidance -->
+- Этот документ задает правила разработки и имеет приоритет над неформальными договоренностями.
+- Любые изменения принципов оформляются правкой этого файла с обновлением версии и даты.
+- Если принцип мешает прогрессу, мы не игнорируем его “молча”, а корректируем текст и фиксируем причину.
 
-**Version**: [CONSTITUTION_VERSION] | **Ratified**: [RATIFICATION_DATE] | **Last Amended**: [LAST_AMENDED_DATE]
-<!-- Example: Version: 2.1.1 | Ratified: 2025-06-13 | Last Amended: 2025-07-16 -->
+**Version**: 0.1.0 | **Ratified**: 2026-01-31 | **Last Amended**: 2026-01-31
