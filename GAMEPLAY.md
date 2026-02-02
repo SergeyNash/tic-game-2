@@ -1,14 +1,39 @@
-# GAMEPLAY (requirements)
+# ГЕЙМПЛЕЙ (требования)
 
-## Health / Damage
+## Здоровье / урон
 
-- **Health scale**: 0–100%.
-- **Maze wall collision** (texture/стена лабиринта): **-10% HP**.
-- **Obstacle collision** (препятствие): **-100% HP (instant death)**.
-- UI: **health bar** visible during gameplay.
-- **Health pickup**: on-map pickup that increases HP (prototype sprite `#210`).
+- **Шкала здоровья**: 0–100%.
+- **Столкновение со стеной лабиринта** (текстура/стена лабиринта): **-10% HP**.
+- **Столкновение с препятствием** (препятствие): **-100% HP (мгновенная смерть)**.
+- **UI**: **полоска здоровья** видима во время игры.
+- **Подбор здоровья**: предмет на карте, увеличивает HP (прототип спрайта `#210`).
 
-## Speed (tunable)
+## Скорость (настраиваемая)
 
-Forward speed must be a tunable parameter (min/max/accel/brake), so it can be balanced later.
+Скорость движения вперёд должна быть настраиваемым параметром (min/max/accel/brake), чтобы позже её можно было балансировать.
+
+## Локации / биомы
+
+- Есть **3 локации**: **Лес → Пустыня → Зима**, переключение по таймеру.
+- При смене биома:
+  - меняется фон/тема
+  - меняются спрайты/тема стен лабиринта
+  - поток лабиринта сбрасывается (без “остатков” предыдущего биома)
+
+## Соответствие параметров переменным в коде
+
+| Параметр из этого файла | Переменные/место в коде |
+| --- | --- |
+| Шкала HP 0–100% | `HEALTH_MAX` и текущее HP игрока `state.player.hp` |
+| Урон от столкновения со стеной лабиринта (-10% HP) | `DAMAGE_MAZE` (вычитается из `state.player.hp` в `resolve_player_collision()`) |
+| Смерть от столкновения с препятствием (-100% HP) | Константа `DAMAGE_OBSTACLE` (задана); фактически смерть реализована как `state.player.hp = 0` при `o.kind == "obstacle"` в `resolve_player_collision()` |
+| Полоска здоровья в UI | Рисуется в `draw_hud()`; заполнение зависит от `state.player.hp / HEALTH_MAX` |
+| Подбор здоровья (спрайт `#210`) | Спрайт: `SPR.item_health = 210`; величина лечения: `HEALTH_PICKUP_AMOUNT`; обработка подбора: `resolve_pickups()` (`it.typ == "health"`) |
+| Скорость (min/max/accel/brake) | `SPEED_MIN`, `SPEED_MAX`, `SPEED_ACCEL`, `SPEED_BRAKE_DECEL`; текущая скорость игрока: `state.player.speed` |
+| Доп. эффект при ударе о стену (замедление) | `SPEED_ON_MAZE_HIT` (применяется в `resolve_player_collision()`) |
+| 3 биома (Лес/Пустыня/Зима) | Текущий биом: `state.biome` (1/2/3); разные шаблоны лабиринта: `MAZE`, `MAZE2`, `MAZE3` |
+| Таймер смены биома | `BIOME_DURATION_FRAMES` и счётчик `state.biome_t`; переключение в `update_biome()` |
+| Смена фона/темы при биоме | `draw_background()` + палитра из `biome_colors()` |
+| Смена темы стен/препятствий при биоме | Выбор спрайтов по `state.biome` в `draw_obstacles()` (через таблицу `SPR.*`) |
+| Сброс “потока” лабиринта при смене биома | В `update_biome()`: `state.maze_row_idx = 1`, очистка `state.obstacles`, `state.pickups`, `state.bullets`, `state.fx` |
 

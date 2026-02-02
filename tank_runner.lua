@@ -78,6 +78,21 @@ local SPR = {
   obs_tree = 64,
   obs_rock = 66,
   obs_wall_intact = 68,
+  obs_wall_cracked = 70,
+  obs_wall_broken = 72,
+
+  -- desert
+  obs_cactus = 74,
+  obs_bush = 76,
+  obs_ruin_intact = 78,
+  obs_ruin_broken = 96,
+
+  -- winter
+  tile_water = 104, -- 16×16 (optional visuals)
+  tile_ice = 106,   -- 16×16 (optional visuals)
+  obs_ice_rock = 144,
+  obs_icewall_intact = 146,
+  obs_icewall_broken = 148,
 
   item_ammo_box = 150, -- 16×16
   item_health = 210, -- 8×8 (we draw it scaled to 16×16)
@@ -97,9 +112,13 @@ local SPR = {
 --   A = ammo pickup spawn
 --   H = health pickup spawn (sprite #210)
 --   X = deadly obstacle (instant death on collision)
+--   I = ice surface (low traction, slippery)
+--   ~ = water surface (blocked, instant stop on contact)
 --   . = empty
 -- ============================================================
 local MAZE_COLS = 9
+
+-- Maze for biome 1 (forest)
 local MAZE = {
   "#.......#",
   "###...###",
@@ -127,10 +146,85 @@ local MAZE = {
   "##.....##",
 }
 
+-- Maze for biome 2 (desert) – same length as MAZE
+local MAZE2 = {
+  -- wide entrance
+  "#.......#",
+  "##.....##",
+  "##.....##",
+  -- pinch + gate
+  "###...###",
+  "###.W.###",
+  "###...###",
+  -- shift corridor right, ammo in corridor
+  "####...##",
+  "####.A.##",
+  "####...##",
+  -- shift corridor left, health in corridor
+  "##...####",
+  "##.H.####",
+  "##...####",
+  -- zigzag section
+  "###...###",
+  "####...##",
+  "#####...#",
+  "####...##",
+  "###...###",
+  -- double gate
+  "##.W.W.##",
+  "##.....##",
+  -- tighter segment (but still passable)
+  "###...###",
+  "###...###",
+  "###.A.###",
+  "###...###",
+  "#.......#",
+}
+
+-- Maze for biome 3 (winter) – same length as MAZE
+-- X uses instant death.
+local MAZE3 = {
+  "#~.....~#",
+  "###...###",
+  "###...###",
+  -- narrow-ish with ice gates
+  "####I####",
+  "###.W.###",
+  "####I####",
+  -- corridor shifts and forces maneuver
+  "#####...#",
+  "####...##",
+  "###...###",
+  "##~...~##",
+  "##.IA.I##",
+  "##~...~##",
+  -- optional deadly tile once per loop (centered)
+  "###...###",
+  "###.X.###",
+  "###...###",
+  -- recovery + another gate
+  "##.....##",
+  "##..H..##",
+  "##.....##",
+  "##.W.W.##",
+  -- final zigzag to exit
+  "###...###",
+  "####...##",
+  "####.A.##",
+  "####...##",
+  "#~.....~#",
+}
+
+-- (by request) keep 3 full-length maps, not fragmented.
+
 local AMMO_TOTAL_START = 20
 local AMMO_MAG_SIZE = 6
 local AMMO_RELOAD_FRAMES = 60
 local AMMO_PICKUP_AMOUNT = 10
+
+-- destructible visuals
+local WALL_CRACKED_CHANCE = 0.35
+local WALL_BROKEN_TTL = 16
 local HEALTH_PICKUP_AMOUNT = 25
 
 local function clamp(x, a, b)
@@ -183,6 +277,7 @@ local state = {
   pickups = {},
   fx = {},
   obstacles = {},
+  surfaces = {}, -- ice/water tiles (winter)
   spawn_cd = 0,
   maze_row_idx = 1,
   score = 0,
@@ -230,6 +325,7 @@ local function reset_game()
   state.pickups = {}
   state.fx = {}
   state.obstacles = {}
+  state.surfaces = {}
   state.spawn_cd = 0
   state.maze_row_idx = 1
   state.score = 0
@@ -283,8 +379,10 @@ local function angle_index()
 end
 
 local function spawn_maze_row()
-  local row = MAZE[state.maze_row_idx] or MAZE[1]
+  local maze = (state.biome == 1 and MAZE) or (state.biome == 2 and MAZE2) or MAZE3
+  local row = maze[state.maze_row_idx] or maze[1]
   local y = -TILE
+  local gate = (row:find("W", 1, true) ~= nil) -- if row contains W, make it a full-width gate
 
   for col = 1, MAZE_COLS do
     local ch = row:sub(col, col)
@@ -293,19 +391,48 @@ local function spawn_maze_row()
     if ch == "#" then
       local typ = (col % 2 == 0) and 1 or 2
       state.obstacles[#state.obstacles + 1] = { kind = "maze", typ = typ, x = x, y = y, hp = 1 }
-    elseif ch == "W" then
-      state.obstacles[#state.obstacles + 1] = { kind = "maze", typ = 3, x = x, y = y, hp = 1 }
+    elseif ch == "X" then
+      state.obstacles[#state.obstacles + 1] = { kind = "obstacle", typ = 2, x = x, y = y, hp = 1 }
+    elseif gate then
+      -- "wide" destructible wall: close the whole corridor so it can't be bypassed
+      -- (keep border walls '#' as-is; everything else becomes a destructible wall segment)
+      local deco = (math.random() < WALL_CRACKED_CHANCE) and "cracked" or "intact"
+      state.obstacles[#state.obstacles + 1] = {
+        kind = "maze",
+        typ = 3,
+        x = x,
+        y = y,
+        hp = 1,
+        v = deco, -- visual variant while intact
+        broken_t = 0,
+        scored = false,
+      }
+    elseif ch == "I" then
+      state.surfaces[#state.surfaces + 1] = { typ = "ice", x = x, y = y }
+    elseif ch == "~" then
+      state.surfaces[#state.surfaces + 1] = { typ = "water", x = x, y = y }
     elseif ch == "A" then
       state.pickups[#state.pickups + 1] = { typ = "ammo", x = x, y = y }
     elseif ch == "H" then
       state.pickups[#state.pickups + 1] = { typ = "health", x = x, y = y }
-    elseif ch == "X" then
-      state.obstacles[#state.obstacles + 1] = { kind = "obstacle", typ = 2, x = x, y = y, hp = 1 }
+    elseif ch == "W" then
+      -- non-gate destructible segment (fallback, if you ever use W without wanting a full-width gate)
+      local deco = (math.random() < WALL_CRACKED_CHANCE) and "cracked" or "intact"
+      state.obstacles[#state.obstacles + 1] = {
+        kind = "maze",
+        typ = 3,
+        x = x,
+        y = y,
+        hp = 1,
+        v = deco,
+        broken_t = 0,
+        scored = false,
+      }
     end
   end
 
   state.maze_row_idx = state.maze_row_idx + 1
-  if state.maze_row_idx > #MAZE then state.maze_row_idx = 1 end
+  if state.maze_row_idx > #maze then state.maze_row_idx = 1 end
 end
 
 local function update_biome()
@@ -315,27 +442,71 @@ local function update_biome()
     state.biome = (state.biome % 3) + 1
     local _, smin, smax = desired_speed_for_biome()
     state.player.speed = clamp(state.player.speed, smin, smax)
+
+    -- reset maze stream on biome switch for clarity
+    state.maze_row_idx = 1
+    state.obstacles = {}
+    state.pickups = {}
+    state.bullets = {}
+    state.fx = {}
+    state.surfaces = {}
   end
+end
+
+local function update_surfaces()
+  local out = {}
+  for i = 1, #state.surfaces do
+    local s = state.surfaces[i]
+    s.y = s.y + state.player.speed
+    if s.y < H + TILE then out[#out + 1] = s end
+  end
+  state.surfaces = out
+end
+
+local function surface_under_tank()
+  -- surfaces list is small, brute force is OK for TIC-80
+  local px, py = state.player.x, TANK_Y
+  for i = 1, #state.surfaces do
+    local s = state.surfaces[i]
+    if aabb(px, py, TANK_W, TANK_H, s.x, s.y, TILE, TILE) then
+      return s.typ
+    end
+  end
+  return nil
 end
 
 local function update_player()
   local p = state.player
 
+  local on = (state.biome == 3) and surface_under_tank() or nil
+  local on_ice = (on == "ice")
+
   local steer = 0
   if btn(BTN_LEFT) then steer = steer - 1 end
   if btn(BTN_RIGHT) then steer = steer + 1 end
 
-  p.vx = p.vx * 0.72 + steer * 1.15
+  local oldx = p.x
+  local vx_damp = on_ice and 0.90 or 0.72
+  local steer_mul = on_ice and 0.60 or 1.15
+  p.vx = p.vx * vx_damp + steer * steer_mul
   p.x = clamp(p.x + p.vx, FIELD_X0, FIELD_X0 + FIELD_W - TANK_W)
 
   local target, smin, smax = desired_speed_for_biome()
   if btn(BTN_B) then
-    p.speed = clamp(p.speed - SPEED_BRAKE_DECEL, SPEED_MIN, smax)
+    local brake_mul = on_ice and 0.65 or 1.0
+    p.speed = clamp(p.speed - SPEED_BRAKE_DECEL * brake_mul, SPEED_MIN, smax)
   else
     if p.speed < target then
       p.speed = math.min(target, p.speed + SPEED_ACCEL)
     end
     p.speed = clamp(p.speed, smin, smax)
+  end
+
+  -- water: blocked + instant stop on contact (no "entering" the tile)
+  if state.biome == 3 and surface_under_tank() == "water" then
+    p.x = oldx
+    p.vx = 0
+    p.speed = clamp(SPEED_MIN, SPEED_MIN, smax)
   end
 
   if p.shoot_cd > 0 then p.shoot_cd = p.shoot_cd - 1 end
@@ -351,6 +522,14 @@ local function update_player()
   end
 
   if btnp(BTN_A) then fire() end
+end
+
+local function draw_surfaces()
+  for i = 1, #state.surfaces do
+    local s = state.surfaces[i]
+    local base = (s.typ == "ice") and SPR.tile_ice or SPR.tile_water
+    spr(base, math.floor(s.x), math.floor(s.y), 0, 1, 0, 0, 2, 2)
+  end
 end
 
 local function update_spawn()
@@ -371,7 +550,15 @@ local function update_obstacles()
     if o.hp > 0 and o.y < H + TILE then
       out[#out + 1] = o
     elseif o.hp <= 0 then
-      state.score = state.score + 10
+      if o.broken_t and o.broken_t > 0 and o.y < H + TILE then
+        o.broken_t = o.broken_t - 1
+        out[#out + 1] = o
+      end
+
+      if not o.scored then
+        o.scored = true
+        state.score = state.score + 10
+      end
     end
   end
   state.obstacles = out
@@ -418,6 +605,10 @@ local function resolve_shots()
         hit = true
         if o.typ == 3 then
           o.hp = o.hp - 1
+          if o.hp <= 0 then
+            -- show a "broken" sprite briefly after destruction
+            o.broken_t = WALL_BROKEN_TTL
+          end
           add_fx("debris", o.x, o.y, 8)
         end
         break
@@ -496,22 +687,67 @@ local function draw_background()
   rectb(FIELD_X0, FIELD_Y0, FIELD_W, FIELD_H, 0)
 
   local scroll = (state.t * math.floor(state.player.speed)) % 8
-  for y = FIELD_Y0 + scroll, FIELD_Y0 + FIELD_H, 8 do
-    rect(FIELD_X0, y, FIELD_W, 1, g2)
+
+  if state.biome == 1 then
+    -- forest: subtle horizontal stripes
+    for y = FIELD_Y0 + scroll, FIELD_Y0 + FIELD_H, 8 do
+      rect(FIELD_X0, y, FIELD_W, 1, g2)
+    end
+  elseif state.biome == 2 then
+    -- desert: dotted sand noise (stable grid, no flicker)
+    for y = FIELD_Y0 + (scroll % 4), FIELD_Y0 + FIELD_H, 4 do
+      for x = FIELD_X0 + ((y // 4) % 2) * 2, FIELD_X0 + FIELD_W, 4 do
+        pix(x, y, g2)
+      end
+    end
+  else
+    -- winter: simple solid field (texture comes from ice/water tiles)
+    -- (base rect is already drawn above)
   end
 end
 
 local function draw_obstacles()
   for i = 1, #state.obstacles do
     local o = state.obstacles[i]
-    if o.hp > 0 then
+    if o.hp > 0 or (o.broken_t and o.broken_t > 0) then
       if DEBUG_MAZE then
         spr(DEBUG_MAZE_SPR, math.floor(o.x), math.floor(o.y), 0, 2, 0, 0, 1, 1)
       else
         local base = SPR.obs_tree
-        if o.typ == 1 then base = SPR.obs_tree
-        elseif o.typ == 2 then base = SPR.obs_rock
-        else base = SPR.obs_wall_intact end
+        if state.biome == 1 then
+          -- forest
+          if o.typ == 1 then base = SPR.obs_tree
+          elseif o.typ == 2 then base = SPR.obs_rock
+          else
+            if o.hp <= 0 and o.broken_t and o.broken_t > 0 then
+              base = SPR.obs_wall_broken
+            else
+              base = (o.v == "cracked") and SPR.obs_wall_cracked or SPR.obs_wall_intact
+            end
+          end
+        elseif state.biome == 2 then
+          -- desert
+          if o.typ == 1 then base = SPR.obs_cactus
+          elseif o.typ == 2 then base = SPR.obs_bush
+          else
+            if o.hp <= 0 and o.broken_t and o.broken_t > 0 then
+              base = SPR.obs_ruin_broken
+            else
+              base = SPR.obs_ruin_intact
+            end
+          end
+        else
+          -- winter
+          if o.typ == 1 then base = SPR.obs_ice_rock
+          elseif o.typ == 2 then base = SPR.obs_ice_rock
+          else
+            if o.hp <= 0 and o.broken_t and o.broken_t > 0 then
+              base = SPR.obs_icewall_broken
+            else
+              base = SPR.obs_icewall_intact
+            end
+          end
+        end
         spr(base, math.floor(o.x), math.floor(o.y), 0, 1, 0, 0, 2, 2)
       end
     end
@@ -598,12 +834,19 @@ function TIC()
     state.inited = true
     math.randomseed((tstamp and tstamp()) or 1)
     reset_game()
+
+    -- validate maze lengths (biome 1/2/3 should match for consistent pacing)
+    if #MAZE2 ~= #MAZE or #MAZE3 ~= #MAZE then
+      -- keep running, but make it visible in debug HUD
+      DEBUG_HUD = true
+    end
   end
 
   state.t = state.t + 1
 
   if state.game_over then
     draw_background()
+    draw_surfaces()
     draw_obstacles()
     draw_pickups()
     draw_bullets()
@@ -622,12 +865,14 @@ function TIC()
   update_bullets()
   update_obstacles()
   update_pickups()
+  update_surfaces()
   update_fx()
   resolve_shots()
   resolve_player_collision()
   resolve_pickups()
 
   draw_background()
+  draw_surfaces()
   draw_obstacles()
   draw_pickups()
   draw_bullets()
