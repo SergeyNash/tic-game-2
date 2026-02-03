@@ -87,12 +87,14 @@ local SPR = {
   obs_ruin_intact = 78,
   obs_ruin_broken = 96,
 
-  -- winter
-  tile_water = 104, -- 16×16 (optional visuals)
-  tile_ice = 106,   -- 16×16 (optional visuals)
-  obs_ice_rock = 144,
-  obs_icewall_intact = 146,
-  obs_icewall_broken = 148,
+  -- city surfaces (16×16)
+  tile_city_asphalt = 152,
+  tile_city_crosswalk = 154,
+  tile_city_puddle = 156,
+
+  -- city obstacles (16×16)
+  obs_city_car = 158,
+  obs_city_dumpster = 178,
 
   item_ammo_box = 150, -- 16×16
   item_health = 210, -- 8×8 (we draw it scaled to 16×16)
@@ -112,9 +114,10 @@ local SPR = {
 --   A = ammo pickup spawn
 --   H = health pickup spawn (sprite #210)
 --   X = deadly obstacle (instant death on collision)
---   I = ice surface (low traction, slippery)
---   ~ = water surface (blocked, instant stop on contact)
---   . = empty
+--   O = city obstacle (deadly): car / dumpster (biome 3 only)
+--   C = city surface: crosswalk (visual)
+--   P = city surface: puddle (visual)
+--   . = empty (in biome 3 treated as asphalt visual)
 -- ============================================================
 local MAZE_COLS = 9
 
@@ -181,38 +184,42 @@ local MAZE2 = {
   "#.......#",
 }
 
--- Maze for biome 3 (winter) – same length as MAZE
+-- Maze for biome 3 (city) – same length as MAZE
 -- X uses instant death.
 local MAZE3 = {
-  "#~.....~#",
-  "###...###",
-  "###...###",
-  -- narrow-ish with ice gates
-  "####I####",
+  "#.......#",
+  -- street with parked obstacle
+  "##..O..##",
+  "##.....##",
+  -- crosswalk band
+  "##.C.C.##",
+  "##.C.C.##",
+  -- barricade gate
   "###.W.###",
-  "####I####",
-  -- corridor shifts and forces maneuver
+  "##.....##",
+  -- zigzag alleys
   "#####...#",
   "####...##",
   "###...###",
-  "##~...~##",
-  "##.IA.I##",
-  "##~...~##",
-  -- optional deadly tile once per loop (centered)
+  -- puddle + pickup pocket
+  "##..P..##",
+  "##..A..##",
+  "##..P..##",
+  -- deadly hazard (construction / pit)
   "###...###",
   "###.X.###",
   "###...###",
-  -- recovery + another gate
+  -- recovery + health
   "##.....##",
   "##..H..##",
   "##.....##",
+  -- double barricade
   "##.W.W.##",
-  -- final zigzag to exit
-  "###...###",
+  -- exit section with another parked obstacle
+  "##..O..##",
   "####...##",
   "####.A.##",
-  "####...##",
-  "#~.....~#",
+  "#.......#",
 }
 
 -- (by request) keep 3 full-length maps, not fragmented.
@@ -260,7 +267,7 @@ local state = {
   inited = false,
   game_over = false,
   t = 0,
-  biome = 1, -- 1 forest, 2 desert, 3 blue
+  biome = 1, -- 1 forest, 2 desert, 3 city
   biome_t = 0,
   player = {
     x = 0,
@@ -277,7 +284,7 @@ local state = {
   pickups = {},
   fx = {},
   obstacles = {},
-  surfaces = {}, -- ice/water tiles (winter)
+  surfaces = {}, -- biome 3 surfaces (city visuals)
   spawn_cd = 0,
   maze_row_idx = 1,
   score = 0,
@@ -286,7 +293,8 @@ local state = {
 local function biome_colors()
   if state.biome == 1 then return 1, 2, 3 end
   if state.biome == 2 then return 4, 5, 6 end
-  return 12, 13, 14
+  -- city: dark asphalt / concrete
+  return 0, 5, 6
 end
 
 local function biome_speed_range(biome)
@@ -388,11 +396,24 @@ local function spawn_maze_row()
     local ch = row:sub(col, col)
     local x = col_to_x(col)
 
+    -- biome 3: surfaces are visuals only (no physics)
+    if state.biome == 3 and (not gate) and ch ~= "#" and ch ~= "W" and ch ~= "X" then
+      local st = "asphalt"
+      if ch == "C" then st = "crosswalk"
+      elseif ch == "P" then st = "puddle"
+      end
+      state.surfaces[#state.surfaces + 1] = { typ = st, x = x, y = y }
+    end
+
     if ch == "#" then
       local typ = (col % 2 == 0) and 1 or 2
       state.obstacles[#state.obstacles + 1] = { kind = "maze", typ = typ, x = x, y = y, hp = 1 }
     elseif ch == "X" then
       state.obstacles[#state.obstacles + 1] = { kind = "obstacle", typ = 2, x = x, y = y, hp = 1 }
+    elseif ch == "O" then
+      -- city deadly obstacles (car/dumpster)
+      local typ = (col % 2 == 0) and 1 or 2
+      state.obstacles[#state.obstacles + 1] = { kind = "obstacle", typ = typ, x = x, y = y, hp = 1 }
     elseif gate then
       -- "wide" destructible wall: close the whole corridor so it can't be bypassed
       -- (keep border walls '#' as-is; everything else becomes a destructible wall segment)
@@ -407,10 +428,6 @@ local function spawn_maze_row()
         broken_t = 0,
         scored = false,
       }
-    elseif ch == "I" then
-      state.surfaces[#state.surfaces + 1] = { typ = "ice", x = x, y = y }
-    elseif ch == "~" then
-      state.surfaces[#state.surfaces + 1] = { typ = "water", x = x, y = y }
     elseif ch == "A" then
       state.pickups[#state.pickups + 1] = { typ = "ammo", x = x, y = y }
     elseif ch == "H" then
@@ -463,50 +480,24 @@ local function update_surfaces()
   state.surfaces = out
 end
 
-local function surface_under_tank()
-  -- surfaces list is small, brute force is OK for TIC-80
-  local px, py = state.player.x, TANK_Y
-  for i = 1, #state.surfaces do
-    local s = state.surfaces[i]
-    if aabb(px, py, TANK_W, TANK_H, s.x, s.y, TILE, TILE) then
-      return s.typ
-    end
-  end
-  return nil
-end
-
 local function update_player()
   local p = state.player
-
-  local on = (state.biome == 3) and surface_under_tank() or nil
-  local on_ice = (on == "ice")
 
   local steer = 0
   if btn(BTN_LEFT) then steer = steer - 1 end
   if btn(BTN_RIGHT) then steer = steer + 1 end
 
-  local oldx = p.x
-  local vx_damp = on_ice and 0.90 or 0.72
-  local steer_mul = on_ice and 0.60 or 1.15
-  p.vx = p.vx * vx_damp + steer * steer_mul
+  p.vx = p.vx * 0.72 + steer * 1.15
   p.x = clamp(p.x + p.vx, FIELD_X0, FIELD_X0 + FIELD_W - TANK_W)
 
   local target, smin, smax = desired_speed_for_biome()
   if btn(BTN_B) then
-    local brake_mul = on_ice and 0.65 or 1.0
-    p.speed = clamp(p.speed - SPEED_BRAKE_DECEL * brake_mul, SPEED_MIN, smax)
+    p.speed = clamp(p.speed - SPEED_BRAKE_DECEL, SPEED_MIN, smax)
   else
     if p.speed < target then
       p.speed = math.min(target, p.speed + SPEED_ACCEL)
     end
     p.speed = clamp(p.speed, smin, smax)
-  end
-
-  -- water: blocked + instant stop on contact (no "entering" the tile)
-  if state.biome == 3 and surface_under_tank() == "water" then
-    p.x = oldx
-    p.vx = 0
-    p.speed = clamp(SPEED_MIN, SPEED_MIN, smax)
   end
 
   if p.shoot_cd > 0 then p.shoot_cd = p.shoot_cd - 1 end
@@ -525,9 +516,13 @@ local function update_player()
 end
 
 local function draw_surfaces()
+  if state.biome ~= 3 then return end
   for i = 1, #state.surfaces do
     local s = state.surfaces[i]
-    local base = (s.typ == "ice") and SPR.tile_ice or SPR.tile_water
+    local base = SPR.tile_city_asphalt
+    if s.typ == "crosswalk" then base = SPR.tile_city_crosswalk
+    elseif s.typ == "puddle" then base = SPR.tile_city_puddle
+    end
     spr(base, math.floor(s.x), math.floor(s.y), 0, 1, 0, 0, 2, 2)
   end
 end
@@ -701,7 +696,7 @@ local function draw_background()
       end
     end
   else
-    -- winter: simple solid field (texture comes from ice/water tiles)
+    -- biome 3: solid field (texture comes from city surface tiles)
     -- (base rect is already drawn above)
   end
 end
@@ -713,6 +708,15 @@ local function draw_obstacles()
       if DEBUG_MAZE then
         spr(DEBUG_MAZE_SPR, math.floor(o.x), math.floor(o.y), 0, 2, 0, 0, 1, 1)
       else
+        -- deadly obstacles (instant death on collision)
+        if o.kind == "obstacle" then
+          local base = SPR.obs_rock
+          if state.biome == 2 then base = SPR.obs_bush end
+          if state.biome == 3 then
+            base = (o.typ == 1) and SPR.obs_city_car or SPR.obs_city_dumpster
+          end
+          spr(base, math.floor(o.x), math.floor(o.y), 0, 1, 0, 0, 2, 2)
+        else
         local base = SPR.obs_tree
         if state.biome == 1 then
           -- forest
@@ -737,18 +741,19 @@ local function draw_obstacles()
             end
           end
         else
-          -- winter
-          if o.typ == 1 then base = SPR.obs_ice_rock
-          elseif o.typ == 2 then base = SPR.obs_ice_rock
+          -- city (temporary: reuse desert ruins for a "concrete/barrier" look)
+          if o.typ == 1 then base = SPR.obs_ruin_intact
+          elseif o.typ == 2 then base = SPR.obs_ruin_intact
           else
             if o.hp <= 0 and o.broken_t and o.broken_t > 0 then
-              base = SPR.obs_icewall_broken
+              base = SPR.obs_ruin_broken
             else
-              base = SPR.obs_icewall_intact
+              base = SPR.obs_ruin_intact
             end
           end
         end
         spr(base, math.floor(o.x), math.floor(o.y), 0, 1, 0, 0, 2, 2)
+        end
       end
     end
   end
@@ -815,7 +820,7 @@ local function draw_hud()
   rect(bar_x + 1, bar_y + 1, fill, bar_h - 2, 6)
   print(p.hp.."%", bar_x + bar_w + 4, bar_y, 15)
 
-  local biome_name = (state.biome == 1 and "FOREST") or (state.biome == 2 and "DESERT") or "BLUE"
+  local biome_name = (state.biome == 1 and "FOREST") or (state.biome == 2 and "DESERT") or "CITY"
   print(biome_name, W - 54, 6, 15)
 
   -- ammo
